@@ -5,28 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Web Program Editor (JS + Python/Pyodide, sandbox)</title>
 <style>
-  :root{
-    --bg:#0f111a; --panel:#131721; --ink:#e6e6e6; --accent:#3d7eff; --muted:#9aa4b2;
-    --danger:#ff4d4d; --ok:#27c93f; --warn:#ffbd2e;
-  }
+  :root{ --bg:#0f111a; --panel:#131721; --ink:#e6e6e6; --accent:#3d7eff; --muted:#9aa4b2; --danger:#ff4d4d }
   *{box-sizing:border-box}
   html,body{height:100%}
   body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 system-ui,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans JP","Hiragino Kaku Gothic ProN","Meiryo",sans-serif}
   .topbar{display:flex;gap:.5rem;align-items:center;padding:.6rem .9rem;background:#0b0e16;border-bottom:1px solid #1c2233;position:sticky;top:0;z-index:10}
   .topbar h1{font-size:15px;margin:0;color:#c9d1d9;font-weight:600}
   .spacer{flex:1}
-  button,.select{
-    background:#1b2233;border:1px solid #2b3550;color:#dfe4ee;border-radius:8px;padding:.45rem .75rem;cursor:pointer
-  }
+  button,.select{background:#1b2233;border:1px solid #2b3550;color:#dfe4ee;border-radius:8px;padding:.45rem .75rem;cursor:pointer}
   button:hover{border-color:#3d7eff}
   button.primary{background:var(--accent);border-color:var(--accent);color:white;font-weight:600}
   button.danger{background:#2a1212;border-color:#5a1b1b}
   button.danger:hover{border-color:var(--danger);color:#ffdede}
   .select{appearance:none}
-  .wrap{
-    height:calc(100% - 46px);
-    display:grid;grid-template-columns: minmax(320px,1fr) 420px;gap:8px;padding:8px;
-  }
+  .wrap{height:calc(100% - 46px);display:grid;grid-template-columns:minmax(320px,1fr) 420px;gap:8px;padding:8px}
   .panel{background:var(--panel);border:1px solid #1c2233;border-radius:10px;display:flex;flex-direction:column;min-height:0}
   .panel header{padding:.5rem .75rem;border-bottom:1px solid #1c2233;display:flex;gap:.5rem;align-items:center}
   .panel header .title{font-weight:600;color:#cbd5e1}
@@ -57,7 +49,7 @@
       <option value="js-hello">JS: Hello + async</option>
       <option value="js-calc">JS: Monte Carlo π</option>
       <option value="py-hello">Py: Hello + loop</option>
-      <option value="py-numpy">Py: NumPy via pyodide.loadPackage</option>
+      <option value="py-numpy">Py: NumPy (pyodide.loadPackage)</option>
     </select>
     <button id="saveBtn" title="コードを保存（localStorage）">Save</button>
     <button id="loadBtn" title="保存済みコードを復元">Load</button>
@@ -79,214 +71,109 @@
         </div>
       </header>
       <div class="body"><div id="editor"></div></div>
-      <div class="footer small">実行は <strong>Web Worker サンドボックス</strong>内（JS/Pythonとも）で、JSはネットワーク完全禁止、Pythonは <code>pyodide</code> 同梱パッケージ取得に限り許可済みです。</div>
+      <div class="footer small">JS はネットワーク完全禁止。Python は <code>https://cdn.jsdelivr.net/pyodide/</code> のみ許可（Pyodide 同梱パッケージ）。</div>
     </section>
 
     <section class="panel">
       <header><span class="title">Console</span></header>
       <div class="body"><div id="console" aria-live="polite"></div></div>
-      <div class="footer small">ヒント: <code>console.log()</code>（JS） / <code>print()</code>（Python）。<span class="muted">（Pyodide は初回ロードに数秒かかります）</span></div>
+      <div class="footer small">ヒント: <code>console.log()</code>（JS） / <code>print()</code>（Python）。初回は Pyodide の読み込みがあります。</div>
     </section>
   </div>
 
-  <!-- Monaco Editor (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
   <script>
-  // --- UI helpers ---
   const $ = s => document.querySelector(s);
   const consoleEl = $('#console');
-  function append(type, msg){
-    const div = document.createElement('div');
-    div.className = `line ${type}`;
-    div.textContent = msg;
-    consoleEl.appendChild(div);
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-  }
-  function info(msg){ append('sys', msg); }
-  function log(msg){ append('log', msg); }
-  function error(msg){ append('err', msg); }
-  function clearConsole(){ consoleEl.innerHTML = ''; }
+  function append(type, msg){ const d=document.createElement('div'); d.className=`line ${type}`; d.textContent=msg; consoleEl.appendChild(d); consoleEl.scrollTop=consoleEl.scrollHeight; }
+  const info = m=>append('sys',m), log=m=>append('log',m), error=m=>append('err',m), clearConsole=()=>consoleEl.innerHTML='';
 
-  // --- Monaco boot ---
-  let editor, jsModel, pyModel, activeLang = 'javascript';
-  const DEFAULT_JS = `// JavaScript sample\nconsole.log("Hello from JS");\nawait new Promise(r=>setTimeout(r, 300));\nconsole.log("2 + 3 =", 2 + 3);\n`;
-  const DEFAULT_PY = `# Python (Pyodide) sample\nprint("Hello from Python")\ns = sum(i*i for i in range(5))\nprint("sum i^2 (0..4) =", s)\n`;
+  let editor, jsModel, pyModel, activeLang='javascript';
+  const DEFAULT_JS = `// JavaScript sample
+console.log("Hello from JS");
+await new Promise(r=>setTimeout(r, 300));
+console.log("2 + 3 =", 2 + 3);
+`;
+  const DEFAULT_PY = `# Python sample (no external packages)
+print("Hello from Python")
+print(sum(i*i for i in range(5)))
+`;
 
-  require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
+  require.config({ paths:{ 'vs':'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
   require(['vs/editor/editor.main'], function(){
     jsModel = monaco.editor.createModel(localStorage.getItem('code:js') ?? DEFAULT_JS, 'javascript');
     pyModel = monaco.editor.createModel(localStorage.getItem('code:py') ?? DEFAULT_PY, 'python');
-    editor = monaco.editor.create(document.getElementById('editor'), {
-      model: jsModel, theme:'vs-dark', automaticLayout:true, minimap:{enabled:false}, fontSize:14
-    });
+    editor = monaco.editor.create(document.getElementById('editor'), { model: jsModel, theme:'vs-dark', automaticLayout:true, minimap:{enabled:false}, fontSize:14 });
   });
 
-  // --- Tabs ---
-  $('#langTabs').addEventListener('click', (e)=>{
-    const t = e.target.closest('.tab'); if(!t) return;
-    [...$('#langTabs').children].forEach(x=>x.classList.remove('active'));
-    t.classList.add('active');
-    activeLang = t.dataset.lang;
-    if(editor){
-      editor.setModel(activeLang==='javascript' ? jsModel : pyModel);
-      editor.focus();
-    }
-    info(`Switched to ${activeLang}`);
-  });
+  $('#langTabs').addEventListener('click', e=>{ const t=e.target.closest('.tab'); if(!t) return; [...$('#langTabs').children].forEach(x=>x.classList.remove('active')); t.classList.add('active'); activeLang=t.dataset.lang; editor?.setModel(activeLang==='javascript'?jsModel:pyModel); editor?.focus(); info(`Switched to ${activeLang}`); });
 
-  // --- Example loader ---
   const examples = {
-    'js-hello': `// Async/await demo\nconsole.log("Start");\nawait new Promise(r=>setTimeout(r,500));\nconsole.log("After 500ms");\nreturn "done";`,
-    'js-calc': `// Monte Carlo π estimation\nfunction rnd(){ return Math.random(); }\nlet inside=0, N=200000;\nfor(let i=0;i<N;i++){\n  const x=rnd(), y=rnd();\n  if(x*x+y*y<=1) inside++;\n}\nconst pi = 4*inside/N;\nconsole.log("π ≈", pi);`,
-    'py-hello': `import sys, time\nprint(sys.version)\nfor i in range(3):\n    print("tick", i); time.sleep(0.3)\n"done"`,
-    'py-numpy': `import pyodide\n# Pyodide 同梱の numpy を CDN から取得（allowlist 済み）\nawait pyodide.loadPackage("numpy")\nimport numpy as np\na=np.array([[1,2],[3,4]]); b=np.array([[5,6],[7,8]])\nprint("A@B =", a@b)\nnp.linalg.eigvals(a)  # 最後の評価値が Return として UI に表示\n`,
+    'js-hello': `// Async/await demo
+console.log("Start");
+await new Promise(r=>setTimeout(r,500));
+console.log("After 500ms");
+return "done";`,
+    'js-calc': `// Monte Carlo π estimation
+let inside=0, N=200000;
+for(let i=0;i<N;i++){ const x=Math.random(), y=Math.random(); if(x*x+y*y<=1) inside++; }
+console.log("π ≈", 4*inside/N);`,
+    'py-hello': `import sys, time
+print(sys.version)
+for i in range(3):
+    print("tick", i); time.sleep(0.3)
+"done"`,
+    'py-numpy': `import pyodide
+# Pyodide 同梱 numpy を CDN から取得（allowlist 対応）
+await pyodide.loadPackage("numpy")
+import numpy as np
+a=np.array([[1,2],[3,4]]); b=np.array([[5,6],[7,8]])
+print("A@B =", a@b)
+np.linalg.eigvals(a)
+`,
   };
-  $('#exampleSelect').addEventListener('change', (e)=>{
-    const v=e.target.value; if(!v) return;
-    const code = examples[v]; if(!code) return;
-    if(activeLang==='javascript') jsModel.setValue(code); else pyModel.setValue(code);
-    e.target.value='';
-  });
+  $('#exampleSelect').addEventListener('change', e=>{ const v=e.target.value; if(!v) return; const code=examples[v]; if(!code) return; (activeLang==='javascript'?jsModel:pyModel).setValue(code); e.target.value=''; });
 
-  // --- Save/Load/Share ---
-  $('#saveBtn').onclick = ()=>{
-    localStorage.setItem('code:js', jsModel.getValue());
-    localStorage.setItem('code:py', pyModel.getValue());
-    info('Saved to localStorage.');
-  };
-  $('#loadBtn').onclick = ()=>{
-    const j = localStorage.getItem('code:js'); if(j!=null) jsModel.setValue(j);
-    const p = localStorage.getItem('code:py'); if(p!=null) pyModel.setValue(p);
-    info('Loaded from localStorage.');
-  };
-  $('#shareBtn').onclick = ()=>{
-    const data = { js: jsModel.getValue(), py: pyModel.getValue(), lang: activeLang };
-    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
-    const url = new URL(location.href);
-    url.searchParams.set('c', b64);
-    navigator.clipboard.writeText(url.toString()).then(()=>info('Share URL copied to clipboard.'),()=>info(url.toString()));
-  };
-  (function restoreFromQuery(){
-    try{
-      const c = new URL(location.href).searchParams.get('c');
-      if(!c) return;
-      const obj = JSON.parse(decodeURIComponent(escape(atob(c))));
-      if(obj.js) jsModel?.setValue(obj.js);
-      if(obj.py) pyModel?.setValue(obj.py);
-      if(obj.lang){ activeLang=obj.lang; const el=[...$('#langTabs').children].find(x=>x.dataset.lang===obj.lang); el?.click(); }
-      info('Loaded code from URL parameter.');
-    }catch(e){ /* ignore */ }
-  })();
+  $('#saveBtn').onclick = ()=>{ localStorage.setItem('code:js', jsModel.getValue()); localStorage.setItem('code:py', pyModel.getValue()); info('Saved to localStorage.'); };
+  $('#loadBtn').onclick = ()=>{ const j=localStorage.getItem('code:js'); if(j!=null) jsModel.setValue(j); const p=localStorage.getItem('code:py'); if(p!=null) pyModel.setValue(p); info('Loaded from localStorage.'); };
+  $('#shareBtn').onclick = ()=>{ const data={js:jsModel.getValue(), py:pyModel.getValue(), lang:activeLang}; const b64=btoa(unescape(encodeURIComponent(JSON.stringify(data)))); const url=new URL(location.href); url.searchParams.set('c', b64); navigator.clipboard.writeText(url.toString()).then(()=>info('Share URL copied to clipboard.'),()=>info(url.toString())); };
+  (function restoreFromQuery(){ try{ const c=new URL(location.href).searchParams.get('c'); if(!c) return; const obj=JSON.parse(decodeURIComponent(escape(atob(c)))); if(obj.js) jsModel?.setValue(obj.js); if(obj.py) pyModel?.setValue(obj.py); if(obj.lang){ activeLang=obj.lang; const el=[...$('#langTabs').children].find(x=>x.dataset.lang===obj.lang); el?.click(); } info('Loaded code from URL parameter.'); }catch(e){} })();
 
-  // --- JS Worker (network disabled) ---
+  // JS Worker (network disabled)
   let jsWorker=null;
-  function startJSWorker(){
-    stopJSWorker();
-    const src = `
-      // Harden sandbox: disable network & clamp timers
-      self.fetch = () => { throw new Error('Network disabled in sandbox'); };
-      self.XMLHttpRequest = class { constructor(){ throw new Error('XHR disabled'); } };
-      const timers = ['setInterval','setTimeout']; for(const t of timers){ const f=self[t]; self[t]=(fn,ms)=>f(fn,Math.min(ms,1e6)); }
-      // Console bridge
-      const send = (type, data)=>postMessage({type, data});
-      console.log = (...a)=>send('log', a.map(x=>typeof x==='object'?JSON.stringify(x):String(x)).join(' '));
-      console.error = (...a)=>send('error', a.map(x=>String(x)).join(' '));
-      // Async runner
-      const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-      onmessage = async (e)=>{
-        try{
-          const fn = new AsyncFunction(\`"use strict";\\n\${e.data.code}\`);
-          const ret = await fn();
-          if(ret!==undefined) send('log', 'Return: ' + String(ret));
-          send('done','');
-        }catch(err){ send('error', String(err)); }
-      };
-    `;
-    const blob = new Blob([src],{type:'application/javascript'});
-    jsWorker = new Worker(URL.createObjectURL(blob), {type:'module'});
-    jsWorker.onmessage = (e)=>{
-      const {type,data}=e.data;
-      if(type==='log') log(data);
-      else if(type==='error') error(data);
-      else if(type==='done') info('JS done.');
-    };
-  }
+  function startJSWorker(){ stopJSWorker(); const src=`
+    self.fetch = () => { throw new Error('Network disabled in sandbox'); };
+    self.XMLHttpRequest = class { constructor(){ throw new Error('XHR disabled'); } };
+    const send=(t,d)=>postMessage({type:t,data:d});
+    console.log=(...a)=>send('log', a.map(x=>typeof x==='object'?JSON.stringify(x):String(x)).join(' '));
+    console.error=(...a)=>send('error', a.map(x=>String(x)).join(' '));
+    const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+    onmessage=async e=>{ try{ const fn=new AsyncFunction(\`"use strict";\n\${e.data.code}\`); const ret=await fn(); if(ret!==undefined) send('log','Return: '+String(ret)); send('done',''); }catch(err){ send('error', String(err)); } };
+  `; const blob=new Blob([src],{type:'application/javascript'}); jsWorker=new Worker(URL.createObjectURL(blob)); jsWorker.onmessage=e=>{ const {type,data}=e.data; if(type==='log') log(data); else if(type==='error') error(data); else if(type==='done') info('JS done.'); }; jsWorker.onerror=e=>error('JS worker error: '+e.message); }
   function stopJSWorker(){ if(jsWorker){ jsWorker.terminate(); jsWorker=null; } }
 
-  // --- Python (Pyodide) Worker with allowlisted fetch ---
+  // Python (Pyodide) Worker with allowlisted fetch + robust error reporting
   let pyWorker=null;
-  function startPyWorker(){
-    stopPyWorker();
-    const PYODIDE_VER = 'v0.24.1';
-    const PYODIDE_BASE = `https://cdn.jsdelivr.net/pyodide/${'v0.24.1'}/full/`;
-    const src = `
-      // Allowlist fetch: only Pyodide CDN (${PYODIDE_VER}) under /full/
-      const originalFetch = self.fetch.bind(self);
-      self.fetch = (input, init) => {
-        const url = typeof input === 'string' ? input : (input?.url || '');
-        const allow = [/^https:\/\/cdn\.jsdelivr\.net\/pyodide\/${PYODIDE_VER.replace('.', '\\.') }\/full\//];
-        if (allow.some(rx => rx.test(url))) {
-          return originalFetch(input, init);
-        }
-        throw new Error('Network blocked by sandbox: ' + url);
-      };
-      // Still block XHR entirely
-      self.XMLHttpRequest = class { constructor(){ throw new Error('XHR disabled'); } };
+  function startPyWorker(){ stopPyWorker(); const src=`
+    // Allowlist: only jsDelivr /pyodide/ (any version). XHR remains disabled.
+    const origFetch = self.fetch ? self.fetch.bind(self) : null;
+    self.fetch = (input, init)=>{ const url = typeof input==='string' ? input : (input&&input.url||''); if(/^https:\/\/cdn\.jsdelivr\.net\/pyodide\//.test(url)) return origFetch(input, init); throw new Error('Network blocked by sandbox: '+url); };
+    self.XMLHttpRequest = class { constructor(){ throw new Error('XHR disabled'); } };
 
-      importScripts('${PYODIDE_BASE}pyodide.js');
-      let ready;
-      async function ensure(){
-        if(!ready){
-          ready = await loadPyodide({
-            indexURL: '${PYODIDE_BASE}',
-            stdout: (s)=>postMessage({type:'log',data:s}),
-            stderr: (s)=>postMessage({type:'error',data:s}),
-          });
-          postMessage({type:'log',data:'[Pyodide ready ${PYODIDE_VER}]'});
-        }
-        return ready;
-      }
-      onmessage = async (e)=>{
-        try{
-          const py = await ensure();
-          const code = e.data.code;
-          const ret = await py.runPythonAsync(code);
-          if(ret !== undefined) postMessage({type:'log',data:'Return: '+String(ret)});
-          postMessage({type:'done', data:''});
-        }catch(err){ postMessage({type:'error', data: String(err)}); }
-      };
-    `;
-    const blob = new Blob([src],{type:'application/javascript'});
-    pyWorker = new Worker(URL.createObjectURL(blob));
-    pyWorker.onmessage = (e)=>{
-      const {type,data}=e.data;
-      if(type==='log') log(data);
-      else if(type==='error') error(data);
-      else if(type==='done') info('Python done.');
-    };
-  }
+    // Load pyodide
+    importScripts('https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js');
+    let ready;
+    async function ensure(){ if(!ready){ try{ postMessage({type:'log',data:'[Loading Pyodide v0.24.1…]'}); ready = await loadPyodide({ indexURL:'https://cdn.jsdelivr.net/pyodide/v0.24.1/full/', stdout:s=>postMessage({type:'log',data:s}), stderr:s=>postMessage({type:'error',data:s}) }); postMessage({type:'log',data:'[Pyodide ready v0.24.1]'}); }catch(e){ postMessage({type:'error',data:'pyodide load failed: '+String(e)}); throw e; } } return ready; }
+    onmessage = async e => { try{ const py=await ensure(); const ret = await py.runPythonAsync(e.data.code); if(ret!==undefined) postMessage({type:'log',data:'Return: '+String(ret)}); postMessage({type:'done',data:''}); }catch(err){ postMessage({type:'error',data:'Worker error: '+String(err)}); } };
+    onerror = ev => { postMessage({type:'error', data: 'Worker uncaught: '+ev.message}); };
+  `; const blob=new Blob([src],{type:'application/javascript'}); pyWorker=new Worker(URL.createObjectURL(blob)); pyWorker.onmessage=e=>{ const {type,data}=e.data; if(type==='log') log(data); else if(type==='error') error(data); else if(type==='done') info('Python done.'); }; pyWorker.onerror=e=>error('PY worker error: '+e.message); pyWorker.onmessageerror=e=>error('PY message error'); }
   function stopPyWorker(){ if(pyWorker){ pyWorker.terminate(); pyWorker=null; } }
 
-  // --- Run / Stop ---
-  $('#runBtn').onclick = ()=>{
-    clearConsole();
-    if(activeLang==='javascript'){
-      if(!jsWorker) startJSWorker();
-      jsWorker.postMessage({code: jsModel.getValue()});
-      info('Running JS…');
-    }else{
-      if(!pyWorker) startPyWorker();
-      pyWorker.postMessage({code: pyModel.getValue()});
-      info('Running Python (Pyodide)…');
-    }
-  };
-  $('#stopBtn').onclick = ()=>{
-    if(activeLang==='javascript'){ stopJSWorker(); info('JS worker terminated.'); }
-    else { stopPyWorker(); info('Python worker terminated.'); }
-  };
+  $('#runBtn').onclick = ()=>{ clearConsole(); if(activeLang==='javascript'){ if(!jsWorker) startJSWorker(); jsWorker.postMessage({code: jsModel.getValue()}); info('Running JS…'); } else { if(!pyWorker) startPyWorker(); pyWorker.postMessage({code: pyModel.getValue()}); info('Running Python (Pyodide)…'); } };
+  $('#stopBtn').onclick = ()=>{ if(activeLang==='javascript'){ stopJSWorker(); info('JS worker terminated.'); } else { stopPyWorker(); info('Python worker terminated.'); } };
   $('#clearBtn').onclick = clearConsole;
 
-  // Warm-up lazily
+  // Lazy warm-up
   addEventListener('click', ()=>{ if(!jsWorker) startJSWorker(); if(!pyWorker) startPyWorker(); }, {once:true});
   </script>
 </body>
