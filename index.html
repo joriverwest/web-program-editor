@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Web Program Editor (JS + Python/Pyodide)</title>
+<title>Web Program Editor (JS + Python/Pyodide, sandbox)</title>
 <style>
   :root{
     --bg:#0f111a; --panel:#131721; --ink:#e6e6e6; --accent:#3d7eff; --muted:#9aa4b2;
@@ -57,7 +57,7 @@
       <option value="js-hello">JS: Hello + async</option>
       <option value="js-calc">JS: Monte Carlo π</option>
       <option value="py-hello">Py: Hello + loop</option>
-      <option value="py-numpy">Py: NumPy dot</option>
+      <option value="py-numpy">Py: NumPy via pyodide.loadPackage</option>
     </select>
     <button id="saveBtn" title="コードを保存（localStorage）">Save</button>
     <button id="loadBtn" title="保存済みコードを復元">Load</button>
@@ -79,13 +79,13 @@
         </div>
       </header>
       <div class="body"><div id="editor"></div></div>
-      <div class="footer small">実行は **Web Worker サンドボックス**内（JS/Pythonとも）で行われ、<code>fetch/XHR</code> は無効化されています。</div>
+      <div class="footer small">実行は <strong>Web Worker サンドボックス</strong>内（JS/Pythonとも）で、JSはネットワーク完全禁止、Pythonは <code>pyodide</code> 同梱パッケージ取得に限り許可済みです。</div>
     </section>
 
     <section class="panel">
       <header><span class="title">Console</span></header>
       <div class="body"><div id="console" aria-live="polite"></div></div>
-      <div class="footer small">ヒント: <code>console.log()</code>（JS） / <code>print()</code>（Python）で出力。<span class="muted">（Pyodide は初回ロードに数秒要します）</span></div>
+      <div class="footer small">ヒント: <code>console.log()</code>（JS） / <code>print()</code>（Python）。<span class="muted">（Pyodide は初回ロードに数秒かかります）</span></div>
     </section>
   </div>
 
@@ -109,16 +109,8 @@
 
   // --- Monaco boot ---
   let editor, jsModel, pyModel, activeLang = 'javascript';
-  const DEFAULT_JS = `// JavaScript sample
-console.log("Hello from JS");
-await new Promise(r=>setTimeout(r, 300));
-console.log("2 + 3 =", 2 + 3);
-`;
-  const DEFAULT_PY = `# Python (Pyodide) sample
-print("Hello from Python")
-s = sum(i*i for i in range(5))
-print("sum i^2 (0..4) =", s)
-`;
+  const DEFAULT_JS = `// JavaScript sample\nconsole.log("Hello from JS");\nawait new Promise(r=>setTimeout(r, 300));\nconsole.log("2 + 3 =", 2 + 3);\n`;
+  const DEFAULT_PY = `# Python (Pyodide) sample\nprint("Hello from Python")\ns = sum(i*i for i in range(5))\nprint("sum i^2 (0..4) =", s)\n`;
 
   require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
   require(['vs/editor/editor.main'], function(){
@@ -144,32 +136,10 @@ print("sum i^2 (0..4) =", s)
 
   // --- Example loader ---
   const examples = {
-    'js-hello': `// Async/await demo
-console.log("Start");
-await new Promise(r=>setTimeout(r,500));
-console.log("After 500ms");
-return "done";`,
-    'js-calc': `// Monte Carlo π estimation
-function rnd(){ return Math.random(); }
-let inside=0, N=200000;
-for(let i=0;i<N;i++){
-  const x=rnd(), y=rnd();
-  if(x*x+y*y<=1) inside++;
-}
-const pi = 4*inside/N;
-console.log("π ≈", pi);`,
-    'py-hello': `import sys, time
-print(sys.version)
-for i in range(3):
-    print("tick", i); time.sleep(0.3)
-"done"`,
-    'py-numpy': `import micropip
-await micropip.install("numpy==1.26.4")
-import numpy as np
-a=np.array([[1,2],[3,4]]); b=np.array([[5,6],[7,8]])
-print("A@B =", a@b)
-np.linalg.eigvals(a)  # 最後の評価値が return として UI に表示されます
-`,
+    'js-hello': `// Async/await demo\nconsole.log("Start");\nawait new Promise(r=>setTimeout(r,500));\nconsole.log("After 500ms");\nreturn "done";`,
+    'js-calc': `// Monte Carlo π estimation\nfunction rnd(){ return Math.random(); }\nlet inside=0, N=200000;\nfor(let i=0;i<N;i++){\n  const x=rnd(), y=rnd();\n  if(x*x+y*y<=1) inside++;\n}\nconst pi = 4*inside/N;\nconsole.log("π ≈", pi);`,
+    'py-hello': `import sys, time\nprint(sys.version)\nfor i in range(3):\n    print("tick", i); time.sleep(0.3)\n"done"`,
+    'py-numpy': `import pyodide\n# Pyodide 同梱の numpy を CDN から取得（allowlist 済み）\nawait pyodide.loadPackage("numpy")\nimport numpy as np\na=np.array([[1,2],[3,4]]); b=np.array([[5,6],[7,8]])\nprint("A@B =", a@b)\nnp.linalg.eigvals(a)  # 最後の評価値が Return として UI に表示\n`,
   };
   $('#exampleSelect').addEventListener('change', (e)=>{
     const v=e.target.value; if(!v) return;
@@ -190,14 +160,12 @@ np.linalg.eigvals(a)  # 最後の評価値が return として UI に表示さ�
     info('Loaded from localStorage.');
   };
   $('#shareBtn').onclick = ()=>{
-    // シンプルに Base64 でクエリに埋め込む（短縮はしない）
     const data = { js: jsModel.getValue(), py: pyModel.getValue(), lang: activeLang };
     const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
     const url = new URL(location.href);
     url.searchParams.set('c', b64);
     navigator.clipboard.writeText(url.toString()).then(()=>info('Share URL copied to clipboard.'),()=>info(url.toString()));
   };
-  // 起動時に ?c= から復元
   (function restoreFromQuery(){
     try{
       const c = new URL(location.href).searchParams.get('c');
@@ -210,12 +178,12 @@ np.linalg.eigvals(a)  # 最後の評価値が return として UI に表示さ�
     }catch(e){ /* ignore */ }
   })();
 
-  // --- JS Worker (sandboxed) ---
+  // --- JS Worker (network disabled) ---
   let jsWorker=null;
   function startJSWorker(){
     stopJSWorker();
     const src = `
-      // Harden sandbox: disable network & timers overshare
+      // Harden sandbox: disable network & clamp timers
       self.fetch = () => { throw new Error('Network disabled in sandbox'); };
       self.XMLHttpRequest = class { constructor(){ throw new Error('XHR disabled'); } };
       const timers = ['setInterval','setTimeout']; for(const t of timers){ const f=self[t]; self[t]=(fn,ms)=>f(fn,Math.min(ms,1e6)); }
@@ -245,24 +213,36 @@ np.linalg.eigvals(a)  # 最後の評価値が return として UI に表示さ�
   }
   function stopJSWorker(){ if(jsWorker){ jsWorker.terminate(); jsWorker=null; } }
 
-  // --- Python (Pyodide) Worker ---
+  // --- Python (Pyodide) Worker with allowlisted fetch ---
   let pyWorker=null;
   function startPyWorker(){
     stopPyWorker();
+    const PYODIDE_VER = 'v0.24.1';
+    const PYODIDE_BASE = `https://cdn.jsdelivr.net/pyodide/${'v0.24.1'}/full/`;
     const src = `
-      // Disable network inside worker to restrict arbitrary egress
-      self.fetch = () => { throw new Error('Network disabled in sandbox'); };
+      // Allowlist fetch: only Pyodide CDN (${PYODIDE_VER}) under /full/
+      const originalFetch = self.fetch.bind(self);
+      self.fetch = (input, init) => {
+        const url = typeof input === 'string' ? input : (input?.url || '');
+        const allow = [/^https:\/\/cdn\.jsdelivr\.net\/pyodide\/${PYODIDE_VER.replace('.', '\\.') }\/full\//];
+        if (allow.some(rx => rx.test(url))) {
+          return originalFetch(input, init);
+        }
+        throw new Error('Network blocked by sandbox: ' + url);
+      };
+      // Still block XHR entirely
       self.XMLHttpRequest = class { constructor(){ throw new Error('XHR disabled'); } };
-      // Load Pyodide
+
+      importScripts('${PYODIDE_BASE}pyodide.js');
       let ready;
-      importScripts('https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js');
       async function ensure(){
         if(!ready){
           ready = await loadPyodide({
+            indexURL: '${PYODIDE_BASE}',
             stdout: (s)=>postMessage({type:'log',data:s}),
             stderr: (s)=>postMessage({type:'error',data:s}),
           });
-          postMessage({type:'log',data:'[Pyodide ready]'});
+          postMessage({type:'log',data:'[Pyodide ready ${PYODIDE_VER}]'});
         }
         return ready;
       }
@@ -306,7 +286,7 @@ np.linalg.eigvals(a)  # 最後の評価値が return として UI に表示さ�
   };
   $('#clearBtn').onclick = clearConsole;
 
-  // Warm-up lazily: prepare workers after first interaction to avoid blocking first paint
+  // Warm-up lazily
   addEventListener('click', ()=>{ if(!jsWorker) startJSWorker(); if(!pyWorker) startPyWorker(); }, {once:true});
   </script>
 </body>
