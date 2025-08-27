@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Web Program Editor (JS + Python/Pyodide)</title>
+<style>
+  :root{
+    --bg:#0f111a; --panel:#131721; --ink:#e6e6e6; --accent:#3d7eff; --muted:#9aa4b2;
+    --danger:#ff4d4d; --ok:#27c93f; --warn:#ffbd2e;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 system-ui,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans JP","Hiragino Kaku Gothic ProN","Meiryo",sans-serif}
+  .topbar{display:flex;gap:.5rem;align-items:center;padding:.6rem .9rem;background:#0b0e16;border-bottom:1px solid #1c2233;position:sticky;top:0;z-index:10}
+  .topbar h1{font-size:15px;margin:0;color:#c9d1d9;font-weight:600}
+  .spacer{flex:1}
+  button,.select{
+    background:#1b2233;border:1px solid #2b3550;color:#dfe4ee;border-radius:8px;padding:.45rem .75rem;cursor:pointer
+  }
+  button:hover{border-color:#3d7eff}
+  button.primary{background:var(--accent);border-color:var(--accent);color:white;font-weight:600}
+  button.danger{background:#2a1212;border-color:#5a1b1b}
+  button.danger:hover{border-color:var(--danger);color:#ffdede}
+  .select{appearance:none}
+  .wrap{
+    height:calc(100% - 46px);
+    display:grid;grid-template-columns: minmax(320px,1fr) 420px;gap:8px;padding:8px;
+  }
+  .panel{background:var(--panel);border:1px solid #1c2233;border-radius:10px;display:flex;flex-direction:column;min-height:0}
+  .panel header{padding:.5rem .75rem;border-bottom:1px solid #1c2233;display:flex;gap:.5rem;align-items:center}
+  .panel header .title{font-weight:600;color:#cbd5e1}
+  .panel .body{flex:1;min-height:0}
+  #editor{height:100%}
+  #console{height:100%;padding:.5rem .75rem;overflow:auto;font-family:ui-monospace,Consolas,Monaco,Menlo,monospace;white-space:pre-wrap}
+  .line{margin:0 0 .35rem 0}
+  .log{color:#c8e6ff}
+  .err{color:#ffb3b3}
+  .sys{color:#b6f5c8}
+  .muted{color:var(--muted)}
+  .tabs{display:flex;gap:6px}
+  .tab{padding:.25rem .6rem;border-radius:7px;border:1px solid #2b3550;background:#161b27;color:#c9d1d9;cursor:pointer}
+  .tab.active{background:#233157;border-color:#3d7eff;color:#fff}
+  .right-actions{display:flex;gap:6px;margin-left:auto}
+  .small{font-size:12px}
+  .footer{padding:.4rem .75rem;border-top:1px solid #1c2233;color:var(--muted)}
+  a{color:#8ab4ff;text-decoration:none}
+  a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Web Program Editor — JavaScript & Python (Pyodide)</h1>
+    <div class="spacer"></div>
+    <select id="exampleSelect" class="select" title="Load example">
+      <option value="">Examples…</option>
+      <option value="js-hello">JS: Hello + async</option>
+      <option value="js-calc">JS: Monte Carlo π</option>
+      <option value="py-hello">Py: Hello + loop</option>
+      <option value="py-numpy">Py: NumPy dot</option>
+    </select>
+    <button id="saveBtn" title="コードを保存（localStorage）">Save</button>
+    <button id="loadBtn" title="保存済みコードを復元">Load</button>
+    <button id="shareBtn" title="URL にコードを埋め込んで共有">Share URL</button>
+  </div>
+
+  <div class="wrap">
+    <section class="panel">
+      <header>
+        <span class="title">Editor</span>
+        <div class="tabs" id="langTabs">
+          <div class="tab active" data-lang="javascript">JavaScript</div>
+          <div class="tab" data-lang="python">Python</div>
+        </div>
+        <div class="right-actions">
+          <button id="runBtn" class="primary">Run</button>
+          <button id="stopBtn" class="danger">Stop</button>
+          <button id="clearBtn" title="出力クリア">Clear</button>
+        </div>
+      </header>
+      <div class="body"><div id="editor"></div></div>
+      <div class="footer small">実行は **Web Worker サンドボックス**内（JS/Pythonとも）で行われ、<code>fetch/XHR</code> は無効化されています。</div>
+    </section>
+
+    <section class="panel">
+      <header><span class="title">Console</span></header>
+      <div class="body"><div id="console" aria-live="polite"></div></div>
+      <div class="footer small">ヒント: <code>console.log()</code>（JS） / <code>print()</code>（Python）で出力。<span class="muted">（Pyodide は初回ロードに数秒要します）</span></div>
+    </section>
+  </div>
+
+  <!-- Monaco Editor (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js"></script>
+  <script>
+  // --- UI helpers ---
+  const $ = s => document.querySelector(s);
+  const consoleEl = $('#console');
+  function append(type, msg){
+    const div = document.createElement('div');
+    div.className = `line ${type}`;
+    div.textContent = msg;
+    consoleEl.appendChild(div);
+    consoleEl.scrollTop = consoleEl.scrollHeight;
+  }
+  function info(msg){ append('sys', msg); }
+  function log(msg){ append('log', msg); }
+  function error(msg){ append('err', msg); }
+  function clearConsole(){ consoleEl.innerHTML = ''; }
+
+  // --- Monaco boot ---
+  let editor, jsModel, pyModel, activeLang = 'javascript';
+  const DEFAULT_JS = `// JavaScript sample
+console.log("Hello from JS");
+await new Promise(r=>setTimeout(r, 300));
+console.log("2 + 3 =", 2 + 3);
+`;
+  const DEFAULT_PY = `# Python (Pyodide) sample
+print("Hello from Python")
+s = sum(i*i for i in range(5))
+print("sum i^2 (0..4) =", s)
+`;
+
+  require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }});
+  require(['vs/editor/editor.main'], function(){
+    jsModel = monaco.editor.createModel(localStorage.getItem('code:js') ?? DEFAULT_JS, 'javascript');
+    pyModel = monaco.editor.createModel(localStorage.getItem('code:py') ?? DEFAULT_PY, 'python');
+    editor = monaco.editor.create(document.getElementById('editor'), {
+      model: jsModel, theme:'vs-dark', automaticLayout:true, minimap:{enabled:false}, fontSize:14
+    });
+  });
+
+  // --- Tabs ---
+  $('#langTabs').addEventListener('click', (e)=>{
+    const t = e.target.closest('.tab'); if(!t) return;
+    [...$('#langTabs').children].forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    activeLang = t.dataset.lang;
+    if(editor){
+      editor.setModel(activeLang==='javascript' ? jsModel : pyModel);
+      editor.focus();
+    }
+    info(`Switched to ${activeLang}`);
+  });
+
+  // --- Example loader ---
+  const examples = {
+    'js-hello': `// Async/await demo
+console.log("Start");
+await new Promise(r=>setTimeout(r,500));
+console.log("After 500ms");
+return "done";`,
+    'js-calc': `// Monte Carlo π estimation
+function rnd(){ return Math.random(); }
+let inside=0, N=200000;
+for(let i=0;i<N;i++){
+  const x=rnd(), y=rnd();
+  if(x*x+y*y<=1) inside++;
+}
+const pi = 4*inside/N;
+console.log("π ≈", pi);`,
+    'py-hello': `import sys, time
+print(sys.version)
+for i in range(3):
+    print("tick", i); time.sleep(0.3)
+"done"`,
+    'py-numpy': `import micropip
+await micropip.install("numpy==1.26.4")
+import numpy as np
+a=np.array([[1,2],[3,4]]); b=np.array([[5,6],[7,8]])
+print("A@B =", a@b)
+np.linalg.eigvals(a)  # 最後の評価値が return として UI に表示されます
+`,
+  };
+  $('#exampleSelect').addEventListener('change', (e)=>{
+    const v=e.target.value; if(!v) return;
+    const code = examples[v]; if(!code) return;
+    if(activeLang==='javascript') jsModel.setValue(code); else pyModel.setValue(code);
+    e.target.value='';
+  });
+
+  // --- Save/Load/Share ---
+  $('#saveBtn').onclick = ()=>{
+    localStorage.setItem('code:js', jsModel.getValue());
+    localStorage.setItem('code:py', pyModel.getValue());
+    info('Saved to localStorage.');
+  };
+  $('#loadBtn').onclick = ()=>{
+    const j = localStorage.getItem('code:js'); if(j!=null) jsModel.setValue(j);
+    const p = localStorage.getItem('code:py'); if(p!=null) pyModel.setValue(p);
+    info('Loaded from localStorage.');
+  };
+  $('#shareBtn').onclick = ()=>{
+    // シンプルに Base64 でクエリに埋め込む（短縮はしない）
+    const data = { js: jsModel.getValue(), py: pyModel.getValue(), lang: activeLang };
+    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+    const url = new URL(location.href);
+    url.searchParams.set('c', b64);
+    navigator.clipboard.writeText(url.toString()).then(()=>info('Share URL copied to clipboard.'),()=>info(url.toString()));
+  };
+  // 起動時に ?c= から復元
+  (function restoreFromQuery(){
+    try{
+      const c = new URL(location.href).searchParams.get('c');
+      if(!c) return;
+      const obj = JSON.parse(decodeURIComponent(escape(atob(c))));
+      if(obj.js) jsModel?.setValue(obj.js);
+      if(obj.py) pyModel?.setValue(obj.py);
+      if(obj.lang){ activeLang=obj.lang; const el=[...$('#langTabs').children].find(x=>x.dataset.lang===obj.lang); el?.click(); }
+      info('Loaded code from URL parameter.');
+    }catch(e){ /* ignore */ }
+  })();
+
+  // --- JS Worker (sandboxed) ---
+  let jsWorker=null;
+  function startJSWorker(){
+    stopJSWorker();
+    const src = `
+      // Harden sandbox: disable network & timers overshare
+      self.fetch = () => { throw new Error('Network disabled in sandbox'); };
+      self.XMLHttpRequest = class { constructor(){ throw new Error('XHR disabled'); } };
+      const timers = ['setInterval','setTimeout']; for(const t of timers){ const f=self[t]; self[t]=(fn,ms)=>f(fn,Math.min(ms,1e6)); }
+      // Console bridge
+      const send = (type, data)=>postMessage({type, data});
+      console.log = (...a)=>send('log', a.map(x=>typeof x==='object'?JSON.stringify(x):String(x)).join(' '));
+      console.error = (...a)=>send('error', a.map(x=>String(x)).join(' '));
+      // Async runner
+      const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+      onmessage = async (e)=>{
+        try{
+          const fn = new AsyncFunction(\`"use strict";\\n\${e.data.code}\`);
+          const ret = await fn();
+          if(ret!==undefined) send('log', 'Return: ' + String(ret));
+          send('done','');
+        }catch(err){ send('error', String(err)); }
+      };
+    `;
+    const blob = new Blob([src],{type:'application/javascript'});
+    jsWorker = new Worker(URL.createObjectURL(blob), {type:'module'});
+    jsWorker.onmessage = (e)=>{
+      const {type,data}=e.data;
+      if(type==='log') log(data);
+      else if(type==='error') error(data);
+      else if(type==='done') info('JS done.');
+    };
+  }
+  function stopJSWorker(){ if(jsWorker){ jsWorker.terminate(); jsWorker=null; } }
+
+  // --- Python (Pyodide) Worker ---
+  let pyWorker=null;
+  function startPyWorker(){
+    stopPyWorker();
+    const src = `
+      // Disable network inside worker to restrict arbitrary egress
+      self.fetch = () => { throw new Error('Network disabled in sandbox'); };
+      self.XMLHttpRequest = class { constructor(){ throw new Error('XHR disabled'); } };
+      // Load Pyodide
+      let ready;
+      importScripts('https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js');
+      async function ensure(){
+        if(!ready){
+          ready = await loadPyodide({
+            stdout: (s)=>postMessage({type:'log',data:s}),
+            stderr: (s)=>postMessage({type:'error',data:s}),
+          });
+          postMessage({type:'log',data:'[Pyodide ready]'});
+        }
+        return ready;
+      }
+      onmessage = async (e)=>{
+        try{
+          const py = await ensure();
+          const code = e.data.code;
+          const ret = await py.runPythonAsync(code);
+          if(ret !== undefined) postMessage({type:'log',data:'Return: '+String(ret)});
+          postMessage({type:'done', data:''});
+        }catch(err){ postMessage({type:'error', data: String(err)}); }
+      };
+    `;
+    const blob = new Blob([src],{type:'application/javascript'});
+    pyWorker = new Worker(URL.createObjectURL(blob));
+    pyWorker.onmessage = (e)=>{
+      const {type,data}=e.data;
+      if(type==='log') log(data);
+      else if(type==='error') error(data);
+      else if(type==='done') info('Python done.');
+    };
+  }
+  function stopPyWorker(){ if(pyWorker){ pyWorker.terminate(); pyWorker=null; } }
+
+  // --- Run / Stop ---
+  $('#runBtn').onclick = ()=>{
+    clearConsole();
+    if(activeLang==='javascript'){
+      if(!jsWorker) startJSWorker();
+      jsWorker.postMessage({code: jsModel.getValue()});
+      info('Running JS…');
+    }else{
+      if(!pyWorker) startPyWorker();
+      pyWorker.postMessage({code: pyModel.getValue()});
+      info('Running Python (Pyodide)…');
+    }
+  };
+  $('#stopBtn').onclick = ()=>{
+    if(activeLang==='javascript'){ stopJSWorker(); info('JS worker terminated.'); }
+    else { stopPyWorker(); info('Python worker terminated.'); }
+  };
+  $('#clearBtn').onclick = clearConsole;
+
+  // Warm-up lazily: prepare workers after first interaction to avoid blocking first paint
+  addEventListener('click', ()=>{ if(!jsWorker) startJSWorker(); if(!pyWorker) startPyWorker(); }, {once:true});
+  </script>
+</body>
+</html>
